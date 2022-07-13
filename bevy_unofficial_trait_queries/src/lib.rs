@@ -13,6 +13,23 @@ use bevy::{
     ptr::{Ptr, PtrMut},
 };
 
+pub fn register_impl<T: Component, Trait: TraitQueryArg + ?Sized>(app: &mut App)
+where
+    Trait: SynthesiseMetaFrom<T>,
+{
+    let id = app.world.init_component::<T>();
+    let meta = <Trait as SynthesiseMetaFrom<T>>::make_meta();
+    let mut impl_registry = app
+        .world
+        .get_resource_or_insert_with::<TraitImplsFor<Trait>>(|| TraitImplsFor::<Trait> {
+            ids: vec![],
+            metas: vec![],
+            _p: PhantomData,
+        });
+    impl_registry.ids.push(id);
+    impl_registry.metas.push(meta);
+}
+
 pub struct Mut<'w, T: ?Sized> {
     component_ticks: &'w mut ComponentTicks,
     last_change_tick: u32,
@@ -72,7 +89,7 @@ impl<'w, T: ?Sized> std::ops::DerefMut for Mut<'w, T> {
 
 struct TraitImplsFor<T: TraitQueryArg + ?Sized> {
     ids: Vec<ComponentId>,
-    meta: Vec<T::Meta>,
+    metas: Vec<T::Meta>,
     _p: PhantomData<fn() -> T>,
 }
 
@@ -129,12 +146,6 @@ impl<'a> WorldQueryGats<'a> for DynRead {
     type Fetch = Option<DynRWFetch<'a>>;
 }
 impl DynRead {
-    fn shrink<'wlong: 'wshort, 'wshort>(
-        item: <Self as WorldQueryGats<'wlong>>::Item,
-    ) -> <Self as WorldQueryGats<'wshort>>::Item {
-        item
-    }
-
     fn init_state(world: &mut World, id: ComponentId) -> DynRWState {
         DynRWState {
             id,
@@ -181,14 +192,6 @@ impl DynRead {
         }
     }
 
-    unsafe fn set_table<'w>(
-        _fetch: &mut <Self as WorldQueryGats<'w>>::Fetch,
-        _state: &DynRWState,
-        _table: &'w bevy::ecs::storage::Table,
-    ) {
-        unreachable!()
-    }
-
     unsafe fn archetype_fetch<'w>(
         fetch: &mut <Self as WorldQueryGats<'w>>::Fetch,
         archetype_index: usize,
@@ -206,17 +209,6 @@ impl DynRead {
                 sparse_set.get(entity).unwrap()
             }
         }
-    }
-
-    unsafe fn table_fetch<'w>(
-        _fetch: &mut <Self as WorldQueryGats<'w>>::Fetch,
-        _table_row: usize,
-    ) -> <Self as WorldQueryGats<'w>>::Item {
-        unreachable!()
-    }
-
-    fn update_component_access(state: &DynRWState, access: &mut FilteredAccess<ComponentId>) {
-        access.add_read(state.id);
     }
 
     fn update_archetype_component_access(
@@ -241,12 +233,6 @@ impl<'a> WorldQueryGats<'a> for DynWrite {
     type Fetch = Option<DynRWFetch<'a>>;
 }
 impl DynWrite {
-    fn shrink<'wlong: 'wshort, 'wshort>(
-        item: <Self as WorldQueryGats<'wlong>>::Item,
-    ) -> <Self as WorldQueryGats<'wshort>>::Item {
-        item
-    }
-
     fn init_state(world: &mut World, id: ComponentId) -> DynRWState {
         DynRWState {
             id,
@@ -291,14 +277,6 @@ impl DynWrite {
                 })
             }
         }
-    }
-
-    unsafe fn set_table<'w>(
-        _fetch: &mut <Self as WorldQueryGats<'w>>::Fetch,
-        _state: &DynRWState,
-        _table: &'w bevy::ecs::storage::Table,
-    ) {
-        unreachable!()
     }
 
     unsafe fn archetype_fetch<'w>(
@@ -324,17 +302,6 @@ impl DynWrite {
                 )
             }
         }
-    }
-
-    unsafe fn table_fetch<'w>(
-        _fetch: &mut <Self as WorldQueryGats<'w>>::Fetch,
-        _table_row: usize,
-    ) -> <Self as WorldQueryGats<'w>>::Item {
-        unreachable!()
-    }
-
-    fn update_component_access(state: &DynRWState, access: &mut FilteredAccess<ComponentId>) {
-        access.add_write(state.id);
     }
 
     fn update_archetype_component_access(
@@ -435,7 +402,7 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitRead
             metas: world
                 .get_resource::<TraitImplsFor<Trait>>()
                 .unwrap()
-                .meta
+                .metas
                 .as_slice(),
             fetches: state
                 .states
@@ -696,7 +663,7 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitWrit
             metas: world
                 .get_resource::<TraitImplsFor<Trait>>()
                 .unwrap()
-                .meta
+                .metas
                 .as_slice(),
             fetches: state
                 .states
