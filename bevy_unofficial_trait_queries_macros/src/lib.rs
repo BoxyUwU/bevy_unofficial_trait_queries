@@ -151,26 +151,26 @@ pub fn queryable_trait(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #world_query_impl_mutable
 
         struct #meta_struct_name #impl_generics (
-            for<'a> unsafe fn(Ptr<'a>) -> &'a (dyn #trait_name #trait_generics + 'static),
-            for<'a> unsafe fn(PtrMut<'a>, &'a core::cell::UnsafeCell<bevy::ecs::component::ComponentTicks>, u32, u32) -> bevy_unofficial_trait_queries::Mut<'a, (dyn #trait_name #trait_generics + 'static)>,
+            for<'a> unsafe fn(bevy::ptr::Ptr<'a>) -> &'a (dyn #trait_name #trait_generics + 'static),
+            for<'a> unsafe fn(bevy::ptr::PtrMut<'a>, &'a core::cell::UnsafeCell<bevy::ecs::component::ComponentTicks>, u32, u32) -> bevy_unofficial_trait_queries::Mut<'a, (dyn #trait_name #trait_generics + 'static)>,
         ) #where_clauses;
 
-        impl #impl_generics TraitQueryArg for (dyn #trait_name #trait_generics + 'static) #where_clauses {
+        impl #impl_generics bevy_unofficial_trait_queries::TraitQueryArg for (dyn #trait_name #trait_generics + 'static) #where_clauses {
             type Meta = #meta_struct_name #trait_generics;
-            unsafe fn make_item<'a>(ptr: Ptr<'a>, meta: &'a Self::Meta) -> <Self as TraitQueryArgGats<'a>>::Item {
+            unsafe fn make_item<'a>(ptr: bevy::ptr::Ptr<'a>, meta: &'a Self::Meta) -> <Self as bevy_unofficial_trait_queries::TraitQueryArgGats<'a>>::Item {
                 (meta.0)(ptr)
             }
-            unsafe fn make_item_mut<'a>(ptr: PtrMut<'a>, ticks: &'a core::cell::UnsafeCell<bevy::ecs::component::ComponentTicks>, last_change_tick: u32, change_tick: u32, meta: &'a Self::Meta) -> <Self as TraitQueryArgGats<'a>>::ItemMut {
+            unsafe fn make_item_mut<'a>(ptr: bevy::ptr::PtrMut<'a>, ticks: &'a core::cell::UnsafeCell<bevy::ecs::component::ComponentTicks>, last_change_tick: u32, change_tick: u32, meta: &'a Self::Meta) -> <Self as bevy_unofficial_trait_queries::TraitQueryArgGats<'a>>::ItemMut {
                 (meta.1)(ptr, ticks, last_change_tick, change_tick)
             }
         }
 
-        unsafe impl #impl_generics_with_world TraitQueryArgGats<'__w> for (dyn #trait_name #trait_generics + 'static) #where_clauses {
+        unsafe impl #impl_generics_with_world bevy_unofficial_trait_queries::TraitQueryArgGats<'__w> for (dyn #trait_name #trait_generics + 'static) #where_clauses {
             type Item = &'__w (dyn #trait_name #trait_generics + 'static);
             type ItemMut = bevy_unofficial_trait_queries::Mut<'__w, (dyn #trait_name #trait_generics + 'static)>;
         }
 
-        impl #impl_generics_with_t SynthesiseMetaFrom<__T> for (dyn #trait_name #trait_generics + 'static) #where_clauses {
+        impl #impl_generics_with_t bevy_unofficial_trait_queries::SynthesiseMetaFrom<__T> for (dyn #trait_name #trait_generics + 'static) #where_clauses {
             fn make_meta() -> #meta_struct_name #trait_generics {
                 #meta_struct_name(
                     |ptr| unsafe { ptr.deref::<__T>() },
