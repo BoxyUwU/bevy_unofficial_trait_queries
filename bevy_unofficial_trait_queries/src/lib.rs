@@ -13,6 +13,63 @@ use bevy::{
     ptr::{Ptr, PtrMut},
 };
 
+pub struct Mut<'w, T: ?Sized> {
+    component_ticks: &'w mut ComponentTicks,
+    last_change_tick: u32,
+    change_tick: u32,
+    ptr: &'w mut T,
+}
+impl<'w, T: ?Sized> Mut<'w, T> {
+    #[doc(hidden)]
+    pub unsafe fn __new_mut(
+        component_ticks: &'w mut ComponentTicks,
+        last_change_tick: u32,
+        change_tick: u32,
+        ptr: &'w mut T,
+    ) -> Mut<'w, T> {
+        Mut {
+            component_ticks,
+            last_change_tick,
+            change_tick,
+            ptr,
+        }
+    }
+
+    #[inline]
+    pub fn is_added(&self) -> bool {
+        self.component_ticks
+            .is_added(self.last_change_tick, self.change_tick)
+    }
+
+    #[inline]
+    pub fn is_changed(&self) -> bool {
+        self.component_ticks
+            .is_changed(self.last_change_tick, self.change_tick)
+    }
+
+    #[inline]
+    pub fn set_changed(&mut self) {
+        self.component_ticks.set_changed(self.change_tick);
+    }
+
+    #[inline]
+    pub fn last_changed(&self) -> u32 {
+        self.last_change_tick
+    }
+}
+impl<'w, T: ?Sized> std::ops::Deref for Mut<'w, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.ptr
+    }
+}
+impl<'w, T: ?Sized> std::ops::DerefMut for Mut<'w, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.set_changed();
+        &mut self.ptr
+    }
+}
+
 struct TraitImplsFor<T: TraitQueryArg + ?Sized> {
     ids: Vec<ComponentId>,
     meta: Vec<T::Meta>,
@@ -28,6 +85,8 @@ pub trait TraitQueryArg: for<'a> TraitQueryArgGats<'a> {
     unsafe fn make_item_mut<'a>(
         ptr: PtrMut<'a>,
         ticks: &'a UnsafeCell<ComponentTicks>,
+        last_change_tick: u32,
+        change_tick: u32,
         meta: &'a Self::Meta,
     ) -> <Self as TraitQueryArgGats<'a>>::ItemMut;
 }
@@ -337,6 +396,8 @@ pub struct DynTraitReadQuery<Trait: ?Sized>(PhantomData<fn() -> Box<Trait>>);
 pub struct DynTraitRWFetch<'w, T: TraitQueryArg + ?Sized> {
     metas: &'w [T::Meta],
     fetches: Vec<(Option<DynRWFetch<'w>>, bool)>,
+    last_change_tick: u32,
+    change_tick: u32,
 }
 #[doc(hidden)]
 pub struct DynTraitRWState {
@@ -367,8 +428,8 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitRead
     unsafe fn init_fetch<'w>(
         world: &'w World,
         state: &DynTraitRWState,
-        _last_change_tick: u32,
-        _change_tick: u32,
+        last_change_tick: u32,
+        change_tick: u32,
     ) -> <Self as WorldQueryGats<'w>>::Fetch {
         DynTraitRWFetch {
             metas: world
@@ -381,11 +442,13 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitRead
                 .iter()
                 .map(|state| {
                     (
-                        DynRead::init_fetch(world, state, _last_change_tick, _change_tick),
+                        DynRead::init_fetch(world, state, last_change_tick, change_tick),
                         false,
                     )
                 })
                 .collect::<Vec<(Option<DynRWFetch<'w>>, bool)>>(),
+            last_change_tick,
+            change_tick,
         }
     }
 
@@ -490,10 +553,14 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitRead
 pub struct DynTraitWriteQueryItem<'w, Trait: TraitQueryArg + ?Sized> {
     metas: &'w [Trait::Meta],
     ptrs: Vec<Option<(PtrMut<'w>, &'w UnsafeCell<ComponentTicks>)>>,
+    last_change_tick: u32,
+    change_tick: u32,
 }
 pub struct DynTraitWriteQueryItemIterMut<'a, 'w, Trait: TraitQueryArg + ?Sized> {
     metas: &'a [Trait::Meta],
     ptrs: &'a mut [Option<(PtrMut<'w>, &'w UnsafeCell<ComponentTicks>)>],
+    last_change_tick: u32,
+    change_tick: u32,
 }
 impl<'a, Trait: TraitQueryArg + ?Sized> Iterator for DynTraitWriteQueryItemIterMut<'a, '_, Trait> {
     type Item = <Trait as TraitQueryArgGats<'a>>::ItemMut;
@@ -513,6 +580,8 @@ impl<'a, Trait: TraitQueryArg + ?Sized> Iterator for DynTraitWriteQueryItemIterM
                     // FIXME `PtrMut::reborrow_mut` would be a good idea
                     PtrMut::new(NonNull::new(ptr.as_ptr()).unwrap()),
                     ticks,
+                    self.last_change_tick,
+                    self.change_tick,
                     first_meta,
                 )
             });
@@ -528,6 +597,8 @@ impl<'a, 'w, Trait: TraitQueryArg + ?Sized> IntoIterator
         DynTraitWriteQueryItemIterMut {
             metas: self.metas,
             ptrs: self.ptrs.as_mut_slice(),
+            last_change_tick: self.last_change_tick,
+            change_tick: self.change_tick,
         }
     }
 }
@@ -567,6 +638,8 @@ impl<'a, Trait: TraitQueryArg + ?Sized> IntoIterator for &'a DynTraitWriteQueryI
 pub struct DynTraitWriteQueryItemIntoIter<'w, Trait: TraitQueryArg + ?Sized> {
     metas: std::slice::Iter<'w, Trait::Meta>,
     ptrs: std::vec::IntoIter<Option<(PtrMut<'w>, &'w UnsafeCell<ComponentTicks>)>>,
+    last_change_tick: u32,
+    change_tick: u32,
 }
 impl<'w, Trait: TraitQueryArg + ?Sized> Iterator for DynTraitWriteQueryItemIntoIter<'w, Trait> {
     type Item = <Trait as TraitQueryArgGats<'w>>::ItemMut;
@@ -577,7 +650,9 @@ impl<'w, Trait: TraitQueryArg + ?Sized> Iterator for DynTraitWriteQueryItemIntoI
                 Some(ptr) => ptr,
                 None => continue,
             };
-            break Some(unsafe { Trait::make_item_mut(ptr, ticks, meta) });
+            break Some(unsafe {
+                Trait::make_item_mut(ptr, ticks, self.last_change_tick, self.change_tick, meta)
+            });
         }
     }
 }
@@ -588,6 +663,8 @@ impl<'w, Trait: TraitQueryArg + ?Sized> IntoIterator for DynTraitWriteQueryItem<
         DynTraitWriteQueryItemIntoIter {
             metas: self.metas.into_iter(),
             ptrs: self.ptrs.into_iter(),
+            last_change_tick: self.last_change_tick,
+            change_tick: self.change_tick,
         }
     }
 }
@@ -612,8 +689,8 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitWrit
     unsafe fn init_fetch<'w>(
         world: &'w World,
         state: &DynTraitRWState,
-        _last_change_tick: u32,
-        _change_tick: u32,
+        last_change_tick: u32,
+        change_tick: u32,
     ) -> <Self as WorldQueryGats<'w>>::Fetch {
         DynTraitRWFetch {
             metas: world
@@ -626,11 +703,13 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitWrit
                 .iter()
                 .map(|state| {
                     (
-                        DynWrite::init_fetch(world, state, _last_change_tick, _change_tick),
+                        DynWrite::init_fetch(world, state, last_change_tick, change_tick),
                         false,
                     )
                 })
                 .collect::<Vec<(Option<DynRWFetch<'w>>, bool)>>(),
+            last_change_tick,
+            change_tick,
         }
     }
 
@@ -674,6 +753,8 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitWrit
                 })
                 .collect::<Vec<_>>(),
             metas: &fetch.metas,
+            last_change_tick: fetch.last_change_tick,
+            change_tick: fetch.change_tick,
         }
     }
 
