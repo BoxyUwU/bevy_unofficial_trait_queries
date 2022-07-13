@@ -492,7 +492,7 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitRead
         DynTraitRWState {
             resource_id: world
                 .components()
-                .get_resource_id(TypeId::of::<Trait>())
+                .get_resource_id(TypeId::of::<TraitImplsFor<Trait>>())
                 .unwrap(),
             states: world
                 .resource::<TraitImplsFor<Trait>>()
@@ -755,7 +755,7 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitWrit
         DynTraitRWState {
             resource_id: world
                 .components()
-                .get_resource_id(TypeId::of::<Trait>())
+                .get_resource_id(TypeId::of::<TraitImplsFor<Trait>>())
                 .unwrap(),
             states: world
                 .resource::<TraitImplsFor<Trait>>()
