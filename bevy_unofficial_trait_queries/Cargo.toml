@@ -1,0 +1,10 @@
+[package]
+name = "bevy_unofficial_trait_queries"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bevy = { path = "../../bevy" }
+bevy_unofficial_trait_queries_macros = { path = "../bevy_unofficial_trait_queries_macros" }
