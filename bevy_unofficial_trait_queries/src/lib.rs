@@ -1,6 +1,6 @@
 pub use bevy_unofficial_trait_queries_macros::queryable_trait;
 
-use std::{any::TypeId, cell::UnsafeCell, marker::PhantomData};
+use std::{any::TypeId, cell::UnsafeCell, marker::PhantomData, ptr::NonNull};
 
 use bevy::{
     ecs::{
@@ -32,7 +32,9 @@ pub trait TraitQueryArg: for<'a> TraitQueryArgGats<'a> {
     ) -> <Self as TraitQueryArgGats<'a>>::ItemMut;
 }
 
-pub trait TraitQueryArgGats<'a>: 'static {
+/// SAFETY: it must be sound to transmute `<_ as TraitQueryArgGats<'a>>::Item/Mut` to `<_ as TraitQueryArgGats<'b>>::Item/Mut`
+/// if `'a: 'b` holds.
+pub unsafe trait TraitQueryArgGats<'a>: 'static {
     type Item;
     type ItemMut;
 }
@@ -294,9 +296,40 @@ impl DynWrite {
 //
 //
 
-pub struct DynTraitReadQueryItem<'w, Trait: TraitQueryArg + ?Sized>(
-    Vec<<Trait as TraitQueryArgGats<'w>>::Item>,
-);
+pub struct DynTraitReadQueryItem<'w, Trait: TraitQueryArg + ?Sized> {
+    metas: &'w [Trait::Meta],
+    ptrs: Vec<Option<Ptr<'w>>>,
+}
+pub struct DynTraitReadQueryItemIter<'a, Trait: TraitQueryArg + ?Sized> {
+    metas: &'a [Trait::Meta],
+    ptrs: &'a [Option<Ptr<'a>>],
+}
+impl<'a, Trait: TraitQueryArg + ?Sized> Iterator for DynTraitReadQueryItemIter<'a, Trait> {
+    type Item = <Trait as TraitQueryArgGats<'a>>::Item;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (first_meta, rest_metas) = self.metas.split_first()?;
+            let (first_ptr, rest_ptrs) = self.ptrs.split_first().unwrap();
+            self.metas = rest_metas;
+            self.ptrs = rest_ptrs;
+            let ptr = match first_ptr {
+                None => continue,
+                Some(ptr) => ptr,
+            };
+            break Some(unsafe { Trait::make_item(*ptr, first_meta) });
+        }
+    }
+}
+impl<'a, Trait: TraitQueryArg + ?Sized> IntoIterator for &'a DynTraitReadQueryItem<'_, Trait> {
+    type IntoIter = DynTraitReadQueryItemIter<'a, Trait>;
+    type Item = <Trait as TraitQueryArgGats<'a>>::Item;
+    fn into_iter(self) -> Self::IntoIter {
+        DynTraitReadQueryItemIter {
+            metas: self.metas,
+            ptrs: self.ptrs.as_slice(),
+        }
+    }
+}
 
 pub struct DynTraitReadQuery<Trait: ?Sized>(PhantomData<fn() -> Box<Trait>>);
 
@@ -328,7 +361,7 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitRead
     fn shrink<'wlong: 'wshort, 'wshort>(
         item: <Self as WorldQueryGats<'wlong>>::Item,
     ) -> <Self as WorldQueryGats<'wshort>>::Item {
-        todo!()
+        item
     }
 
     unsafe fn init_fetch<'w>(
@@ -386,20 +419,17 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitRead
         fetch: &mut <Self as WorldQueryGats<'w>>::Fetch,
         archetype_index: usize,
     ) -> <Self as WorldQueryGats<'w>>::Item {
-        DynTraitReadQueryItem(
-            fetch
+        DynTraitReadQueryItem {
+            ptrs: fetch
                 .fetches
                 .iter_mut()
-                .zip(fetch.metas.iter())
-                .flat_map(|((fetch, matches), meta)| match matches {
+                .map(|(fetch, matches)| match matches {
                     false => None,
-                    true => Some(Trait::make_item(
-                        DynRead::archetype_fetch(fetch, archetype_index),
-                        meta,
-                    )),
+                    true => Some(DynRead::archetype_fetch(fetch, archetype_index)),
                 })
                 .collect::<Vec<_>>(),
-        )
+            metas: &fetch.metas,
+        }
     }
 
     unsafe fn table_fetch<'w>(
@@ -457,9 +487,110 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitRead
 
 //
 
-pub struct DynTraitWriteQueryItem<'w, Trait: TraitQueryArg + ?Sized>(
-    Vec<<Trait as TraitQueryArgGats<'w>>::ItemMut>,
-);
+pub struct DynTraitWriteQueryItem<'w, Trait: TraitQueryArg + ?Sized> {
+    metas: &'w [Trait::Meta],
+    ptrs: Vec<Option<(PtrMut<'w>, &'w UnsafeCell<ComponentTicks>)>>,
+}
+pub struct DynTraitWriteQueryItemIterMut<'a, 'w, Trait: TraitQueryArg + ?Sized> {
+    metas: &'a [Trait::Meta],
+    ptrs: &'a mut [Option<(PtrMut<'w>, &'w UnsafeCell<ComponentTicks>)>],
+}
+impl<'a, Trait: TraitQueryArg + ?Sized> Iterator for DynTraitWriteQueryItemIterMut<'a, '_, Trait> {
+    type Item = <Trait as TraitQueryArgGats<'a>>::ItemMut;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (first_meta, rest_metas) = self.metas.split_first()?;
+            let ptrs = std::mem::replace(&mut self.ptrs, &mut []);
+            let (first_ptr, rest_ptrs) = ptrs.split_first_mut().unwrap();
+            self.metas = rest_metas;
+            self.ptrs = rest_ptrs;
+            let (ptr, ticks) = match first_ptr {
+                None => continue,
+                Some(ptr) => ptr,
+            };
+            break Some(unsafe {
+                Trait::make_item_mut(
+                    // FIXME `PtrMut::reborrow_mut` would be a good idea
+                    PtrMut::new(NonNull::new(ptr.as_ptr()).unwrap()),
+                    ticks,
+                    first_meta,
+                )
+            });
+        }
+    }
+}
+impl<'a, 'w, Trait: TraitQueryArg + ?Sized> IntoIterator
+    for &'a mut DynTraitWriteQueryItem<'w, Trait>
+{
+    type IntoIter = DynTraitWriteQueryItemIterMut<'a, 'w, Trait>;
+    type Item = <Trait as TraitQueryArgGats<'a>>::ItemMut;
+    fn into_iter(self) -> Self::IntoIter {
+        DynTraitWriteQueryItemIterMut {
+            metas: self.metas,
+            ptrs: self.ptrs.as_mut_slice(),
+        }
+    }
+}
+pub struct DynTraitWriteQueryItemIter<'a, Trait: TraitQueryArg + ?Sized> {
+    metas: &'a [Trait::Meta],
+    ptrs: &'a [Option<(PtrMut<'a>, &'a UnsafeCell<ComponentTicks>)>],
+}
+impl<'a, Trait: TraitQueryArg + ?Sized> Iterator for DynTraitWriteQueryItemIter<'a, Trait> {
+    type Item = <Trait as TraitQueryArgGats<'a>>::Item;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (first_meta, rest_metas) = self.metas.split_first()?;
+            let (first_ptr, rest_ptrs) = self.ptrs.split_first().unwrap();
+            self.metas = rest_metas;
+            self.ptrs = rest_ptrs;
+            let (ptr, _) = match first_ptr {
+                None => continue,
+                Some(ptr) => ptr,
+            };
+            break Some(unsafe {
+                // FIXME `PtrMut::reborrow` would be good
+                Trait::make_item(Ptr::new(NonNull::new(ptr.as_ptr()).unwrap()), first_meta)
+            });
+        }
+    }
+}
+impl<'a, Trait: TraitQueryArg + ?Sized> IntoIterator for &'a DynTraitWriteQueryItem<'_, Trait> {
+    type IntoIter = DynTraitWriteQueryItemIter<'a, Trait>;
+    type Item = <Trait as TraitQueryArgGats<'a>>::Item;
+    fn into_iter(self) -> Self::IntoIter {
+        DynTraitWriteQueryItemIter {
+            metas: self.metas,
+            ptrs: self.ptrs.as_slice(),
+        }
+    }
+}
+pub struct DynTraitWriteQueryItemIntoIter<'w, Trait: TraitQueryArg + ?Sized> {
+    metas: std::slice::Iter<'w, Trait::Meta>,
+    ptrs: std::vec::IntoIter<Option<(PtrMut<'w>, &'w UnsafeCell<ComponentTicks>)>>,
+}
+impl<'w, Trait: TraitQueryArg + ?Sized> Iterator for DynTraitWriteQueryItemIntoIter<'w, Trait> {
+    type Item = <Trait as TraitQueryArgGats<'w>>::ItemMut;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let meta = self.metas.next()?;
+            let (ptr, ticks) = match self.ptrs.next().unwrap() {
+                Some(ptr) => ptr,
+                None => continue,
+            };
+            break Some(unsafe { Trait::make_item_mut(ptr, ticks, meta) });
+        }
+    }
+}
+impl<'w, Trait: TraitQueryArg + ?Sized> IntoIterator for DynTraitWriteQueryItem<'w, Trait> {
+    type Item = <Trait as TraitQueryArgGats<'w>>::ItemMut;
+    type IntoIter = DynTraitWriteQueryItemIntoIter<'w, Trait>;
+    fn into_iter(self) -> Self::IntoIter {
+        DynTraitWriteQueryItemIntoIter {
+            metas: self.metas.into_iter(),
+            ptrs: self.ptrs.into_iter(),
+        }
+    }
+}
 
 pub struct DynTraitWriteQuery<Trait: ?Sized>(PhantomData<fn() -> Box<Trait>>);
 
@@ -475,7 +606,7 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitWrit
     fn shrink<'wlong: 'wshort, 'wshort>(
         item: <Self as WorldQueryGats<'wlong>>::Item,
     ) -> <Self as WorldQueryGats<'wshort>>::Item {
-        todo!()
+        item
     }
 
     unsafe fn init_fetch<'w>(
@@ -533,21 +664,17 @@ unsafe impl<Trait: TraitQueryArg + ?Sized + 'static> WorldQuery for DynTraitWrit
         fetch: &mut <Self as WorldQueryGats<'w>>::Fetch,
         archetype_index: usize,
     ) -> <Self as WorldQueryGats<'w>>::Item {
-        DynTraitWriteQueryItem(
-            fetch
+        DynTraitWriteQueryItem {
+            ptrs: fetch
                 .fetches
                 .iter_mut()
-                .zip(fetch.metas.iter())
-                .flat_map(|((fetch, matches), meta)| match matches {
+                .map(|(fetch, matches)| match matches {
                     false => None,
-                    true => {
-                        let (component_ptr, ticks) =
-                            DynWrite::archetype_fetch(fetch, archetype_index);
-                        Some(Trait::make_item_mut(component_ptr, ticks, meta))
-                    }
+                    true => Some(DynWrite::archetype_fetch(fetch, archetype_index)),
                 })
                 .collect::<Vec<_>>(),
-        )
+            metas: &fetch.metas,
+        }
     }
 
     unsafe fn table_fetch<'w>(

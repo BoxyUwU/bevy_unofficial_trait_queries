@@ -165,7 +165,7 @@ pub fn queryable_trait(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        impl #impl_generics_with_world TraitQueryArgGats<'__w> for (dyn #trait_name #trait_generics + 'static) #where_clauses {
+        unsafe impl #impl_generics_with_world TraitQueryArgGats<'__w> for (dyn #trait_name #trait_generics + 'static) #where_clauses {
             type Item = &'__w (dyn #trait_name #trait_generics + 'static);
             type ItemMut = &'__w mut (dyn #trait_name #trait_generics + 'static);
         }
