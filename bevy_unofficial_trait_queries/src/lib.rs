@@ -1,3 +1,5 @@
+// FIXME almost certainly a `Query<&mut dyn Trait> does not conflict with a `ResMut<TraitImplsFor<Trait>>` which is unsound lol
+
 pub use bevy_unofficial_trait_queries_macros::queryable_trait;
 
 use std::{any::TypeId, cell::UnsafeCell, marker::PhantomData, ptr::NonNull};
