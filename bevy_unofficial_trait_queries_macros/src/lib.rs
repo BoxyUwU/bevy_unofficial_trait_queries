@@ -42,17 +42,22 @@ pub fn queryable_trait(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // i wish this wasnt necessary
     let world_query_impler = |is_readonly: bool| {
-        let (deferred_worldquery, opt_mut) = match is_readonly {
+        let (deferred_worldquery, readonly_worldquery, opt_mut) = match is_readonly {
             true => (
                 quote!(bevy_unofficial_trait_queries::DynTraitReadQuery<dyn #trait_name #trait_generics>),
+                quote!(Self),
                 quote!(),
             ),
             false => (
                 quote!(bevy_unofficial_trait_queries::DynTraitWriteQuery<dyn #trait_name #trait_generics>),
+                quote!(&'static (dyn #trait_name #trait_generics + 'static)),
                 quote!(mut),
             ),
         };
 
+        // ideally all these impls would be for `&'static dyn Trait<...> + 'static` instead of `&'_ dyn Trait<...> + 'static`
+        // but until bevy_ecs changes to `struct Query<Q: WorldQuery + 'static`, a fn sig of `fn foo(_: Query<&dyn Trait>)`
+        // is unable to figure out that `&dyn Trait` should be `'static` and ends up requiring manual annotation of `&'static dyn Trait`
         quote! {
             const _: () = {
                 use bevy::ecs::{query::*, archetype::{ArchetypeComponentId, Archetype}, prelude::*, component::ComponentId};
@@ -61,7 +66,7 @@ pub fn queryable_trait(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     type Fetch = <#deferred_worldquery as WorldQueryGats<'__w>>::Fetch;
                 }
                 unsafe impl #impl_generics bevy::ecs::query::WorldQuery for &'_ #opt_mut (dyn #trait_name #trait_generics + 'static) {
-                    type ReadOnly = <#deferred_worldquery as WorldQuery>::ReadOnly;
+                    type ReadOnly = #readonly_worldquery;
                     type State = <#deferred_worldquery as WorldQuery>::State;
 
                     fn shrink<'wlong: 'wshort, 'wshort>(item: bevy::ecs::query::QueryItem<'wlong, Self>) -> bevy::ecs::query::QueryItem<'wshort, Self> {
